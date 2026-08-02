@@ -39,6 +39,7 @@ MIEMBRO_EXTERNO_ROLE_ID = 1516093644720046150
 BOT_ROLE_ID = 1492155946842198086
 WAIT_ROLE_ID = 1516095262903242833
 STATUS_CHANNEL_ID = 1510791864566022154
+OWNER_ID = 742882682190561343
 
 ROLE_LEVELS = {
     WAIT_ROLE_ID: 0,
@@ -91,10 +92,19 @@ async def send_status_embed(title: str, fields: list[tuple[str, str, bool]], col
     channel = await get_status_channel()
     if channel is None:
         return
-    embed = discord.Embed(title=title, color=color, timestamp=datetime.datetime.utcnow())
+    embed = discord.Embed(title=title, color=color, timestamp=datetime.datetime.now(datetime.timezone.utc))
     for name, value, inline in fields:
         embed.add_field(name=name, value=value, inline=inline)
     await channel.send(embed=embed)
+
+
+async def send_owner_dm(embed: discord.Embed):
+    try:
+        owner = await bot.fetch_user(OWNER_ID)
+        if owner is not None:
+            await owner.send(embed=embed)
+    except Exception as e:
+        print(f"[WARN] No se pudo enviar MD al owner: {e}")
 
 
 # --- Simple StatsStore usando SQLite (persistencia ligera) ---
@@ -273,15 +283,25 @@ voice_start: dict[int, float] = {}
 @bot.event
 async def on_ready():
     print(f"¡Conectado como {bot.user}!")
+    db_status = "SQLite"
     if stats_store.use_mongo and stats_store.mongo_client is not None:
         try:
             await stats_store.mongo_client.admin.command('ping')
             print("¡Conexión exitosa a MongoDB Atlas!")
+            db_status = "MongoDB"
         except Exception as e:
             print(f"Error al conectar a MongoDB: {e}; cayendo a SQLite.")
             stats_store.use_mongo = False
     else:
         print("MongoDB no configurado; usando SQLite para persistencia.")
+
+    embed = discord.Embed(title="🛡️ Sistema - Protocolo de Inicio", color=discord.Color.green())
+    embed.add_field(name="Bot conectado como", value=f"`{bot.user}`", inline=True)
+    embed.add_field(name="Python", value=f"`{platform.python_version()}`", inline=True)
+    embed.add_field(name="Base de datos", value=f"`{db_status}`", inline=True)
+    embed.add_field(name="Hora de inicio", value=datetime.datetime.now(datetime.timezone.utc).strftime("%d/%m/%Y %H:%M UTC"), inline=False)
+    embed.set_footer(text="TabaquitaGPT | Inicio exitoso")
+    await send_owner_dm(embed)
 
 @bot.command()
 async def ping(ctx):
@@ -317,7 +337,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             [
                 ("Usuario", f"{member.mention} ({member.id})", False),
                 ("Ubicacion", after.channel.name, False),
-                ("Fecha y Hora", datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M:%S UTC"), False),
+                ("Fecha y Hora", datetime.datetime.now(datetime.timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC"), False),
                 ("Iniciando trackeo de VC", "", False),
             ],
             discord.Color.green(),
@@ -342,7 +362,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 ("VC Nuevo", after.channel.name, False),
                 ("Tiempo en el VC", f"{int(duration // 3600):02d}:{int((duration % 3600) // 60):02d}:{int(duration % 60):02d}", False),
                 ("AXP Conseguida", str(gained), False),
-                ("Resumiendo trackeo exitosamente", "", False),
+                ("Fecha y Hora", datetime.datetime.now(datetime.timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC"), False),
             ],
             discord.Color.blue(),
         )
@@ -361,7 +381,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             [
                 ("Usuario", f"{member.mention} ({member.id})", False),
                 ("Ubicacion", before.channel.name, False),
-                ("Fecha y Hora", datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M:%S UTC"), False),
+                ("Fecha y Hora", datetime.datetime.now(datetime.timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC"), False),
                 ("Estancia en el VC", f"{int(duration // 3600):02d}:{int((duration % 3600) // 60):02d}:{int(duration % 60):02d}", False),
                 ("AXP Conseguida", str(gained), False),
             ],
@@ -548,8 +568,13 @@ async def kgaxp(ctx, member: discord.Member, amount: str):
     if val is None or val <= 0:
         await ctx.send("❌ Cantidad inválida.")
         return
-    await stats_store.add_axp(str(member.id), val)
-    await ctx.send(f"✅ Añadidos {val} AXP a {member.mention}.")
+    try:
+        await stats_store.add_axp(str(member.id), val)
+        await ctx.send(f"✅ Añadidos {val} AXP a {member.mention}.")
+        print(f"[INFO] kgaxp success: {ctx.author} gave {val} AXP to {member}")
+    except Exception as e:
+        print(f"[ERROR] kgaxp failed: {e}")
+        await ctx.send("❌ Error interno al agregar AXP. Revisa los logs de Render.")
 
 
 @bot.command(name="kraxp")
@@ -561,8 +586,13 @@ async def kraxp(ctx, member: discord.Member, amount: str):
     if val is None or val <= 0:
         await ctx.send("❌ Cantidad inválida.")
         return
-    await stats_store.remove_axp(str(member.id), val)
-    await ctx.send(f"✅ Quitados {val} AXP a {member.mention}.")
+    try:
+        await stats_store.remove_axp(str(member.id), val)
+        await ctx.send(f"✅ Quitados {val} AXP a {member.mention}.")
+        print(f"[INFO] kraxp success: {ctx.author} removed {val} AXP from {member}")
+    except Exception as e:
+        print(f"[ERROR] kraxp failed: {e}")
+        await ctx.send("❌ Error interno al remover AXP. Revisa los logs de Render.")
 
 
 @bot.command(name="kgexp")
@@ -574,8 +604,13 @@ async def kgexp(ctx, member: discord.Member, amount: str):
     if val is None or val <= 0:
         await ctx.send("❌ Cantidad inválida.")
         return
-    await stats_store.add_exp(str(member.id), val)
-    await ctx.send(f"✅ Añadidos {val} EXP a {member.mention}.")
+    try:
+        await stats_store.add_exp(str(member.id), val)
+        await ctx.send(f"✅ Añadidos {val} EXP a {member.mention}.")
+        print(f"[INFO] kgexp success: {ctx.author} gave {val} EXP to {member}")
+    except Exception as e:
+        print(f"[ERROR] kgexp failed: {e}")
+        await ctx.send("❌ Error interno al agregar EXP. Revisa los logs de Render.")
 
 
 @bot.command(name="krexp")
@@ -587,8 +622,13 @@ async def krexp(ctx, member: discord.Member, amount: str):
     if val is None or val <= 0:
         await ctx.send("❌ Cantidad inválida.")
         return
-    await stats_store.remove_exp(str(member.id), val)
-    await ctx.send(f"✅ Quitados {val} EXP a {member.mention}.")
+    try:
+        await stats_store.remove_exp(str(member.id), val)
+        await ctx.send(f"✅ Quitados {val} EXP a {member.mention}.")
+        print(f"[INFO] krexp success: {ctx.author} removed {val} EXP from {member}")
+    except Exception as e:
+        print(f"[ERROR] krexp failed: {e}")
+        await ctx.send("❌ Error interno al remover EXP. Revisa los logs de Render.")
 
 
 @bot.command(name="kseaxp")
@@ -600,8 +640,12 @@ async def kseaxp(ctx, member: discord.Member, amount: str):
     if val is None or val < 0:
         await ctx.send("❌ Cantidad inválida.")
         return
-    await stats_store.set_axp(str(member.id), val)
-    await ctx.send(f"✅ AXP de {member.mention} fijada a {val}.")
+    try:
+        await stats_store.set_axp(str(member.id), val)
+        await ctx.send(f"✅ AXP de {member.mention} fijada a {val}.")
+    except Exception as e:
+        print(f"[ERROR] kseaxp failed: {e}")
+        await ctx.send("❌ Error interno al fijar AXP. Revisa los logs de Render.")
 
 
 @bot.command(name="ksexp")
@@ -613,8 +657,12 @@ async def ksexp(ctx, member: discord.Member, amount: str):
     if val is None or val < 0:
         await ctx.send("❌ Cantidad inválida.")
         return
-    await stats_store.set_exp(str(member.id), val)
-    await ctx.send(f"✅ EXP de {member.mention} fijada a {val}.")
+    try:
+        await stats_store.set_exp(str(member.id), val)
+        await ctx.send(f"✅ EXP de {member.mention} fijada a {val}.")
+    except Exception as e:
+        print(f"[ERROR] ksexp failed: {e}")
+        await ctx.send("❌ Error interno al fijar EXP. Revisa los logs de Render.")
 
 async def handle(request):
     return web.Response(text="¡TabaquitaGPT está activo y funcionando!")
