@@ -4,15 +4,31 @@ import sqlite3
 import threading
 import time
 import datetime
+import urllib.parse
 from aiohttp import web
 import discord
 from discord.ext import commands
-from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI")
+MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URI") or os.getenv("DATABASE_URL")
+
+
+def _derive_mongo_db_name(uri: str | None) -> str | None:
+    if not uri:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(uri)
+        if parsed.path:
+            name = parsed.path.lstrip('/')
+            return name if name else None
+    except Exception:
+        pass
+    return None
+
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME") or _derive_mongo_db_name(MONGO_URI) or "TabaquitaGPT"
+STATS_COLLECTION_NAME = "user_stats"
 
 # Jerarquía de roles: abajo menos permisos, arriba más permisos.
 HIGH_COMMAND_ROLE_ID = 1496612684345512119
@@ -84,6 +100,26 @@ async def send_status_embed(title: str, fields: list[tuple[str, str, bool]], col
 # --- Simple StatsStore usando SQLite (persistencia ligera) ---
 class StatsStore:
     def __init__(self, path: str = "data/user_stats.db"):
+        self.mongo_client = None
+        self.db = None
+        self.collection = None
+        self.use_mongo = bool(MONGO_URI)
+
+        if self.use_mongo:
+            try:
+                from motor.motor_asyncio import AsyncIOMotorClient
+
+                self.mongo_client = AsyncIOMotorClient(
+                    MONGO_URI,
+                    serverSelectionTimeoutMS=5000,
+                    connectTimeoutMS=5000,
+                )
+                self.db = self.mongo_client.get_database(MONGO_DB_NAME)
+                self.collection = self.db[STATS_COLLECTION_NAME]
+            except Exception:
+                print("[WARN] No se pudo inicializar MongoDB; usando SQLite en su lugar.")
+                self.use_mongo = False
+
         self.path = os.path.abspath(path)
         d = os.path.dirname(self.path)
         if d:
@@ -114,7 +150,7 @@ class StatsStore:
         with self._lock:
             conn = sqlite3.connect(self.path)
             try:
-                cur = conn.execute("SELECT _id, axp, exp, messages FROM user_stats WHERE _id = ?", (user_id,))
+                cur = conn.execute("SELECT _id, axp, exp, messages, status FROM user_stats WHERE _id = ?", (user_id,))
                 row = cur.fetchone()
                 if not row:
                     return {"_id": user_id, "axp": 0.0, "exp": 0.0, "messages": 0, "status": "Operativo"}
@@ -149,9 +185,37 @@ class StatsStore:
                 conn.close()
 
     async def get_user_stats(self, user_id: str) -> dict:
+        if self.use_mongo and self.collection is not None:
+            try:
+                user_id = str(user_id)
+                doc = await self.collection.find_one({"_id": user_id})
+                if doc is None:
+                    doc = {"_id": user_id, "axp": 0.0, "exp": 0.0, "messages": 0, "status": "Operativo"}
+                    await self.collection.insert_one(doc)
+                    return doc
+                doc.setdefault("axp", 0.0)
+                doc.setdefault("exp", 0.0)
+                doc.setdefault("messages", 0)
+                doc.setdefault("status", "Operativo")
+                return doc
+            except Exception as e:
+                print(f"[WARN] Error Mongo get_user_stats: {e}; cayendo a SQLite.")
+                self.use_mongo = False
+
         return await asyncio.to_thread(self._get_sync, user_id)
 
     async def update_user_stats(self, user_id: str, updates: dict):
+        if self.use_mongo and self.collection is not None:
+            try:
+                user_id = str(user_id)
+                default = {"_id": user_id, "axp": 0.0, "exp": 0.0, "messages": 0, "status": "Operativo"}
+                update_data = {"$set": updates, "$setOnInsert": default}
+                await self.collection.update_one({"_id": user_id}, update_data, upsert=True)
+                return
+            except Exception as e:
+                print(f"[WARN] Error Mongo update_user_stats: {e}; cayendo a SQLite.")
+                self.use_mongo = False
+
         current = await self.get_user_stats(user_id)
         current.update(updates)
         await asyncio.to_thread(self._upsert_sync, current)
@@ -195,10 +259,6 @@ class StatsStore:
 # Instancia global
 stats_store = StatsStore()
 
-
-db_client = AsyncIOMotorClient(MONGO_URI)
-db = db_client["TabaquitaGPT"]
-
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -213,11 +273,15 @@ voice_start: dict[int, float] = {}
 @bot.event
 async def on_ready():
     print(f"¡Conectado como {bot.user}!")
-    try:
-        await db_client.admin.command('ping')
-        print("¡Conexión exitosa a MongoDB Atlas!")
-    except Exception as e:
-        print(f"Error al conectar a MongoDB: {e}")
+    if stats_store.use_mongo and stats_store.mongo_client is not None:
+        try:
+            await stats_store.mongo_client.admin.command('ping')
+            print("¡Conexión exitosa a MongoDB Atlas!")
+        except Exception as e:
+            print(f"Error al conectar a MongoDB: {e}; cayendo a SQLite.")
+            stats_store.use_mongo = False
+    else:
+        print("MongoDB no configurado; usando SQLite para persistencia.")
 
 @bot.command()
 async def ping(ctx):
