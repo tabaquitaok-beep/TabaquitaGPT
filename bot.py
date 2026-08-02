@@ -8,11 +8,23 @@ import urllib.parse
 from aiohttp import web
 import discord
 from discord.ext import commands
+from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URI") or os.getenv("DATABASE_URL")
+DEFAULT_MONGO_URI = "mongodb+srv://tabaquitaok_db_user:F8MA9SEK4F5NJATz@cluster0.qoxx5jn.mongodb.net/?appName=Cluster0"
+MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URI") or os.getenv("DATABASE_URL") or DEFAULT_MONGO_URI
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME") or "TabaquitaGPT"
+STATS_COLLECTION_NAME = "user_stats"
+
+mongo_client = AsyncIOMotorClient(
+    MONGO_URI,
+    serverSelectionTimeoutMS=5000,
+    connectTimeoutMS=5000,
+)
+mongo_db = mongo_client[MONGO_DB_NAME]
+stats_collection = mongo_db[STATS_COLLECTION_NAME]
 
 
 def _derive_mongo_db_name(uri: str | None) -> str | None:
@@ -126,8 +138,10 @@ class StatsStore:
                 )
                 self.db = self.mongo_client.get_database(MONGO_DB_NAME)
                 self.collection = self.db[STATS_COLLECTION_NAME]
-            except Exception:
-                print("[WARN] No se pudo inicializar MongoDB; usando SQLite en su lugar.")
+                print(f"[INFO] Conectando a MongoDB con URI: {'(env)' if os.getenv('MONGO_URI') or os.getenv('MONGODB_URI') else '(default)'}")
+                print(f"[INFO] Base de datos Mongo configurada: {MONGO_DB_NAME}")
+            except Exception as e:
+                print(f"[WARN] No se pudo inicializar MongoDB; usando SQLite en su lugar. Error: {e}")
                 self.use_mongo = False
 
         self.path = os.path.abspath(path)
@@ -230,40 +244,45 @@ class StatsStore:
         current.update(updates)
         await asyncio.to_thread(self._upsert_sync, current)
 
+    async def verify_mongo(self) -> bool:
+        if not self.use_mongo or self.mongo_client is None:
+            return False
+        try:
+            await self.mongo_client.admin.command("ping")
+            return True
+        except Exception as e:
+            print(f"[WARN] MongoDB ping falló: {e}")
+            self.use_mongo = False
+            return False
+
     async def add_axp(self, user_id: str, amount: float):
         stats = await self.get_user_stats(user_id)
-        stats["axp"] = float(stats.get("axp", 0.0)) + float(amount)
-        await asyncio.to_thread(self._upsert_sync, stats)
+        new_amount = float(stats.get("axp", 0.0)) + float(amount)
+        await self.update_user_stats(user_id, {"axp": new_amount})
 
     async def remove_axp(self, user_id: str, amount: float):
         stats = await self.get_user_stats(user_id)
-        stats["axp"] = max(0.0, float(stats.get("axp", 0.0)) - float(amount))
-        await asyncio.to_thread(self._upsert_sync, stats)
+        new_amount = max(0.0, float(stats.get("axp", 0.0)) - float(amount))
+        await self.update_user_stats(user_id, {"axp": new_amount})
 
     async def add_exp(self, user_id: str, amount: float):
         stats = await self.get_user_stats(user_id)
-        stats["exp"] = float(stats.get("exp", 0.0)) + float(amount)
-        await asyncio.to_thread(self._upsert_sync, stats)
+        new_amount = float(stats.get("exp", 0.0)) + float(amount)
+        await self.update_user_stats(user_id, {"exp": new_amount})
 
     async def remove_exp(self, user_id: str, amount: float):
         stats = await self.get_user_stats(user_id)
-        stats["exp"] = max(0.0, float(stats.get("exp", 0.0)) - float(amount))
-        await asyncio.to_thread(self._upsert_sync, stats)
+        new_amount = max(0.0, float(stats.get("exp", 0.0)) - float(amount))
+        await self.update_user_stats(user_id, {"exp": new_amount})
 
     async def set_axp(self, user_id: str, amount: float):
-        stats = await self.get_user_stats(user_id)
-        stats["axp"] = float(amount)
-        await asyncio.to_thread(self._upsert_sync, stats)
+        await self.update_user_stats(user_id, {"axp": float(amount)})
 
     async def set_exp(self, user_id: str, amount: float):
-        stats = await self.get_user_stats(user_id)
-        stats["exp"] = float(amount)
-        await asyncio.to_thread(self._upsert_sync, stats)
+        await self.update_user_stats(user_id, {"exp": float(amount)})
 
     async def set_status(self, user_id: str, status: str):
-        stats = await self.get_user_stats(user_id)
-        stats["status"] = status
-        await asyncio.to_thread(self._upsert_sync, stats)
+        await self.update_user_stats(user_id, {"status": status})
 
 
 # Instancia global
@@ -285,13 +304,12 @@ async def on_ready():
     print(f"¡Conectado como {bot.user}!")
     db_status = "SQLite"
     if stats_store.use_mongo and stats_store.mongo_client is not None:
-        try:
-            await stats_store.mongo_client.admin.command('ping')
+        connected = await stats_store.verify_mongo()
+        if connected:
             print("¡Conexión exitosa a MongoDB Atlas!")
             db_status = "MongoDB"
-        except Exception as e:
-            print(f"Error al conectar a MongoDB: {e}; cayendo a SQLite.")
-            stats_store.use_mongo = False
+        else:
+            print("MongoDB falló en el ping; cayendo a SQLite.")
     else:
         print("MongoDB no configurado; usando SQLite para persistencia.")
 
