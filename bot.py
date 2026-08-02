@@ -3,6 +3,7 @@ import asyncio
 import sqlite3
 import threading
 import time
+import datetime
 from aiohttp import web
 import discord
 from discord.ext import commands
@@ -21,6 +22,7 @@ LOW_RANK_ROLE_ID = 1494162106725961849
 MIEMBRO_EXTERNO_ROLE_ID = 1516093644720046150
 BOT_ROLE_ID = 1492155946842198086
 WAIT_ROLE_ID = 1516095262903242833
+STATUS_CHANNEL_ID = 1510791864566022154
 
 ROLE_LEVELS = {
     WAIT_ROLE_ID: 0,
@@ -57,6 +59,26 @@ def get_role_name(role_id: int) -> str:
         HIGH_COMMAND_ROLE_ID: "High Command",
     }
     return names.get(role_id, "Sin rango")
+
+
+async def get_status_channel() -> discord.TextChannel | None:
+    channel = bot.get_channel(STATUS_CHANNEL_ID)
+    if channel is not None:
+        return channel
+    try:
+        return await bot.fetch_channel(STATUS_CHANNEL_ID)
+    except Exception:
+        return None
+
+
+async def send_status_embed(title: str, fields: list[tuple[str, str, bool]], color: discord.Color):
+    channel = await get_status_channel()
+    if channel is None:
+        return
+    embed = discord.Embed(title=title, color=color, timestamp=datetime.datetime.utcnow())
+    for name, value, inline in fields:
+        embed.add_field(name=name, value=value, inline=inline)
+    await channel.send(embed=embed)
 
 
 # --- Simple StatsStore usando SQLite (persistencia ligera) ---
@@ -179,6 +201,8 @@ db = db_client["TabaquitaGPT"]
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
+intents.voice_states = True
 # Usar solo el prefijo "!k" (acepta tanto "!kcmd" como "!k cmd")
 bot = commands.Bot(command_prefix=["!k ", "!k"], intents=intents)
 
@@ -201,6 +225,19 @@ async def ping(ctx):
 
 
 @bot.event
+async def on_member_join(member: discord.Member):
+    if member.bot:
+        return
+    await send_status_embed(
+        "Nuevo miembro",
+        [
+            ("Usuario", f"{member.mention} ({member.id})", False),
+            ("Cuenta creada", member.created_at.strftime("%d/%m/%Y %H:%M:%S UTC"), False),
+        ],
+        discord.Color.green(),
+    )
+
+@bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     if member.bot:
         return
@@ -211,6 +248,16 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     if entered:
         voice_start[member.id] = time.time()
+        await send_status_embed(
+            "Union a VC",
+            [
+                ("Usuario", f"{member.mention} ({member.id})", False),
+                ("Ubicacion", after.channel.name, False),
+                ("Fecha y Hora", datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M:%S UTC"), False),
+                ("Iniciando trackeo de VC", "", False),
+            ],
+            discord.Color.green(),
+        )
         return
 
     if switched:
@@ -223,6 +270,18 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         if gained > 0:
             await stats_store.add_axp(str(member.id), float(gained))
         voice_start[member.id] = time.time()
+        await send_status_embed(
+            "Cambio de VC",
+            [
+                ("Usuario", f"{member.mention} ({member.id})", False),
+                ("VC Anterior", before.channel.name, False),
+                ("VC Nuevo", after.channel.name, False),
+                ("Tiempo en el VC", f"{int(duration // 3600):02d}:{int((duration % 3600) // 60):02d}:{int(duration % 60):02d}", False),
+                ("AXP Conseguida", str(gained), False),
+                ("Resumiendo trackeo exitosamente", "", False),
+            ],
+            discord.Color.blue(),
+        )
         return
 
     if left:
@@ -233,6 +292,17 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         gained = int(duration // 3600)
         if gained > 0:
             await stats_store.add_axp(str(member.id), float(gained))
+        await send_status_embed(
+            "Salida de VC",
+            [
+                ("Usuario", f"{member.mention} ({member.id})", False),
+                ("Ubicacion", before.channel.name, False),
+                ("Fecha y Hora", datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M:%S UTC"), False),
+                ("Estancia en el VC", f"{int(duration // 3600):02d}:{int((duration % 3600) // 60):02d}:{int(duration % 60):02d}", False),
+                ("AXP Conseguida", str(gained), False),
+            ],
+            discord.Color.red(),
+        )
 
 
 @bot.event
@@ -242,18 +312,24 @@ async def on_message(message: discord.Message):
 
     # Count messages for AXP per 10 messages -> 0.1 AXP
     if message.guild is not None:
-        user_id = str(message.author.id)
-        stats = await stats_store.get_user_stats(user_id)
-        msgs = int(stats.get("messages", 0)) + 1
-        award = 0.0
-        if msgs >= 10:
-            give_times = msgs // 10
-            award = 0.1 * give_times
-            msgs = msgs % 10
+        try:
+            user_id = str(message.author.id)
+            stats = await stats_store.get_user_stats(user_id)
+            msgs = int(stats.get("messages", 0)) + 1
+            award = 0.0
+            if msgs >= 10:
+                give_times = msgs // 10
+                award = 0.1 * give_times
+                msgs = msgs % 10
 
-        await stats_store.update_user_stats(user_id, {"messages": msgs})
-        if award > 0:
-            await stats_store.add_axp(user_id, award)
+            await stats_store.update_user_stats(user_id, {"messages": msgs})
+            if award > 0:
+                await stats_store.add_axp(user_id, award)
+        except Exception as e:
+            try:
+                print(f"[LOG] on_message tracking error: {e}")
+            except Exception:
+                pass
 
     await bot.process_commands(message)
 
@@ -277,11 +353,11 @@ async def rank(ctx, target: discord.Member = None):
 async def help_command(ctx):
     embed = discord.Embed(title="📘 Ayuda básica", color=discord.Color.blue())
     embed.description = "Comandos disponibles en TabaquitaGPT."
-    embed.add_field(name="!ping", value="Comprueba que el bot está respondiendo.", inline=False)
-    embed.add_field(name="!rank", value="Muestra tu rango y nivel de permisos.", inline=False)
-    embed.add_field(name="!profile", value="Muestra información básica del usuario.", inline=False)
-    embed.add_field(name="!loa", value="Marca tu estado como Leave of Absence.", inline=False)
-    embed.add_field(name="!operativo", value="Vuelve a dejar tu estado operativo.", inline=False)
+    embed.add_field(name="!kping", value="Comprueba que el bot está respondiendo.", inline=False)
+    embed.add_field(name="!krank", value="Muestra tu rango y nivel de permisos.", inline=False)
+    embed.add_field(name="!kprofile", value="Muestra información básica del usuario.", inline=False)
+    embed.add_field(name="!kloa", value="Marca tu estado como Leave of Absence.", inline=False)
+    embed.add_field(name="!koperativo", value="Vuelve a dejar tu estado operativo.", inline=False)
     await ctx.send(embed=embed)
 
 def get_next_rank(current_rank: int | None) -> int | None:
