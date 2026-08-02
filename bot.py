@@ -61,7 +61,8 @@ db = db_client["TabaquitaGPT"]
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix=["!k", "!"], intents=intents)
+# Usar solo el prefijo "!k" (acepta tanto "!kcmd" como "!k cmd")
+bot = commands.Bot(command_prefix=["!k ", "!k"], intents=intents)
 
 @bot.event
 async def on_ready():
@@ -92,7 +93,7 @@ async def rank(ctx, target: discord.Member = None):
         f"{member.mention} tiene nivel de rango {level} ({role_name})."
     )
 
-@bot.command(name="help")
+@bot.command(name="ayuda")
 async def help_command(ctx):
     embed = discord.Embed(title="📘 Ayuda básica", color=discord.Color.blue())
     embed.description = "Comandos disponibles en TabaquitaGPT."
