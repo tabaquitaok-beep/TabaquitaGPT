@@ -26,6 +26,31 @@ from utils import (
     utcnow_str,
 )
 
+STATUS_ALIASES = {
+    "activo": "Activo",
+    "active": "Activo",
+    "operativo": "Activo",
+    "operacion": "Activo",
+    "leave of absence": "LoA",
+    "loa": "LoA",
+    "suspend": "Suspend",
+    "susp": "Suspend",
+    "ranklock": "Ranklock",
+    "rank lock": "Ranklock",
+    "blacklist": "Blacklist",
+    "bl": "Blacklist",
+}
+
+
+def normalize_status(status: str | None) -> str:
+    if status is None:
+        return "Activo"
+    text = str(status).strip()
+    if not text:
+        return "Activo"
+    lowercase = text.lower()
+    return STATUS_ALIASES.get(lowercase, text if text in {"Activo", "LoA", "Suspend", "Ranklock", "Blacklist"} else "Activo")
+
 
 def get_next_rank(current_rank: int | None) -> int | None:
     if current_rank == LOW_RANK_ROLE_ID:
@@ -273,9 +298,9 @@ class GeneralCog(commands.Cog):
             if select_text:
                 req_lines.append(select_text)
 
-        status = stats.get("status", "Operativo")
-        if status not in {"Operativo", "Leave of Absence"}:
-            status = "Operativo"
+        status = normalize_status(stats.get("status", "Activo"))
+        if status not in {"Activo", "LoA", "Suspend", "Ranklock", "Blacklist"}:
+            status = "Activo"
 
         embed = discord.Embed(title=f"📜 Perfil de {member.display_name}", color=discord.Color.blue())
         embed.set_thumbnail(url=member.display_avatar.url)
@@ -295,10 +320,28 @@ class GeneralCog(commands.Cog):
         await stats_store.set_status(str(ctx.author.id), "LoA")
         await ctx.send(f"✅ {ctx.author.mention} ahora está en LoA.")
 
-    @commands.command(name="operativo")
-    async def operativo(self, ctx: commands.Context):
-        await stats_store.set_status(str(ctx.author.id), "Operativo")
-        await ctx.send(f"✅ {ctx.author.mention} ahora está Operativo.")
+    @commands.command(name="activo", aliases=["operativo"])
+    async def activo(self, ctx: commands.Context):
+        await stats_store.set_status(str(ctx.author.id), "Activo")
+        await ctx.send(f"✅ {ctx.author.mention} ahora está Activo.")
+
+    @commands.command(name="suspend")
+    @commands.has_any_role(HIGH_RANK_ROLE_ID, HIGH_COMMAND_ROLE_ID)
+    async def suspend(self, ctx: commands.Context):
+        await stats_store.set_status(str(ctx.author.id), "Suspend")
+        await ctx.send(f"✅ {ctx.author.mention} ahora está Suspend.")
+
+    @commands.command(name="ranklock")
+    @commands.has_any_role(HIGH_RANK_ROLE_ID, HIGH_COMMAND_ROLE_ID)
+    async def ranklock(self, ctx: commands.Context):
+        await stats_store.set_status(str(ctx.author.id), "Ranklock")
+        await ctx.send(f"✅ {ctx.author.mention} ahora está Ranklock.")
+
+    @commands.command(name="blacklist")
+    @commands.has_role(HIGH_COMMAND_ROLE_ID)
+    async def blacklist(self, ctx: commands.Context):
+        await stats_store.set_status(str(ctx.author.id), "Blacklist")
+        await ctx.send(f"✅ {ctx.author.mention} ahora está Blacklist.")
 
     @commands.command(name="accept")
     @commands.has_any_role(HIGH_RANK_ROLE_ID, HIGH_COMMAND_ROLE_ID)

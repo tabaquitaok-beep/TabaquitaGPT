@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import time
 import datetime
+import platform
 import urllib.parse
 from aiohttp import web
 import discord
@@ -62,6 +63,45 @@ ROLE_LEVELS = {
     HIGH_RANK_ROLE_ID: 5,
     HIGH_COMMAND_ROLE_ID: 6,
 }
+
+STATUS_ALIASES = {
+    "activo": "Activo",
+    "active": "Activo",
+    "operativo": "Activo",
+    "operacion": "Activo",
+    "leave of absence": "LoA",
+    "loa": "LoA",
+    "suspend": "Suspend",
+    "susp": "Suspend",
+    "suspender": "Suspend",
+    "ranklock": "Ranklock",
+    "rank lock": "Ranklock",
+    "blacklist": "Blacklist",
+    "bl": "Blacklist",
+}
+
+
+def normalize_status(status: str | None) -> str:
+    if status is None:
+        return "Activo"
+    text = str(status).strip()
+    if not text:
+        return "Activo"
+    lowered = text.lower()
+    canonical = STATUS_ALIASES.get(lowered)
+    if canonical:
+        return canonical
+    if text.lower() in {"operativo", "active", "activo"}:
+        return "Activo"
+    if text.lower() in {"leave of absence", "loa"}:
+        return "LoA"
+    if text.lower() in {"suspend", "susp", "suspender"}:
+        return "Suspend"
+    if text.lower() in {"ranklock", "rank lock"}:
+        return "Ranklock"
+    if text.lower() in {"blacklist", "bl"}:
+        return "Blacklist"
+    return text
 
 
 def get_member_role_level(member: discord.Member) -> int:
@@ -177,8 +217,8 @@ class StatsStore:
                 cur = conn.execute("SELECT _id, axp, exp, messages, status FROM user_stats WHERE _id = ?", (user_id,))
                 row = cur.fetchone()
                 if not row:
-                    return {"_id": user_id, "axp": 0.0, "exp": 0.0, "messages": 0, "status": "Operativo"}
-                return {"_id": row[0], "axp": float(row[1]), "exp": float(row[2]), "messages": int(row[3]), "status": row[4]}
+                    return {"_id": user_id, "axp": 0.0, "exp": 0.0, "messages": 0, "status": "Activo"}
+                return {"_id": row[0], "axp": float(row[1]), "exp": float(row[2]), "messages": int(row[3]), "status": normalize_status(row[4])}
             finally:
                 conn.close()
 
@@ -201,7 +241,7 @@ class StatsStore:
                         float(stats.get("axp", 0.0)),
                         float(stats.get("exp", 0.0)),
                         int(stats.get("messages", 0)),
-                        stats.get("status", "Operativo"),
+                        normalize_status(stats.get("status", "Activo")),
                     ),
                 )
                 conn.commit()
@@ -214,13 +254,13 @@ class StatsStore:
                 user_id = str(user_id)
                 doc = await self.collection.find_one({"_id": user_id})
                 if doc is None:
-                    doc = {"_id": user_id, "axp": 0.0, "exp": 0.0, "messages": 0, "status": "Operativo"}
+                    doc = {"_id": user_id, "axp": 0.0, "exp": 0.0, "messages": 0, "status": "Activo"}
                     await self.collection.insert_one(doc)
                     return doc
                 doc.setdefault("axp", 0.0)
                 doc.setdefault("exp", 0.0)
                 doc.setdefault("messages", 0)
-                doc.setdefault("status", "Operativo")
+                doc["status"] = normalize_status(doc.get("status", "Activo"))
                 return doc
             except Exception as e:
                 print(f"[WARN] Error Mongo get_user_stats: {e}; cayendo a SQLite.")
@@ -232,8 +272,9 @@ class StatsStore:
         if self.use_mongo and self.collection is not None:
             try:
                 user_id = str(user_id)
-                default = {"_id": user_id, "axp": 0.0, "exp": 0.0, "messages": 0, "status": "Operativo"}
-                update_data = {"$set": updates, "$setOnInsert": default}
+                default = {"_id": user_id, "axp": 0.0, "exp": 0.0, "messages": 0, "status": "Activo"}
+                normalized = {key: normalize_status(value) if key == "status" else value for key, value in updates.items()}
+                update_data = {"$set": normalized, "$setOnInsert": default}
                 await self.collection.update_one({"_id": user_id}, update_data, upsert=True)
                 return
             except Exception as e:
@@ -525,9 +566,9 @@ async def profile(ctx, target: discord.Member = None):
         if select_text:
             req_lines.append(select_text)
 
-    status = stats.get("status", "Operativo")
-    if status not in {"Operativo", "Leave of Absence"}:
-        status = "Operativo"
+    status = normalize_status(stats.get("status", "Activo"))
+    if status not in {"Activo", "LoA", "Suspend", "Ranklock", "Blacklist"}:
+        status = "Activo"
 
     embed = discord.Embed(title=f"📜 Perfil de {member.display_name}", color=discord.Color.blue())
     embed.set_thumbnail(url=member.display_avatar.url)
@@ -547,10 +588,28 @@ async def loa(ctx):
     await stats_store.set_status(str(ctx.author.id), "LoA")
     await ctx.send(f"✅ {ctx.author.mention} ahora está en LoA.")
 
-@bot.command(name="operativo")
-async def operativo(ctx):
-    await stats_store.set_status(str(ctx.author.id), "Operativo")
-    await ctx.send(f"✅ {ctx.author.mention} ahora está Operativo.")
+@bot.command(name="activo", aliases=["operativo"])
+async def activo(ctx):
+    await stats_store.set_status(str(ctx.author.id), "Activo")
+    await ctx.send(f"✅ {ctx.author.mention} ahora está Activo.")
+
+@bot.command(name="suspend")
+@commands.has_any_role(HIGH_RANK_ROLE_ID, HIGH_COMMAND_ROLE_ID)
+async def suspend(ctx):
+    await stats_store.set_status(str(ctx.author.id), "Suspend")
+    await ctx.send(f"✅ {ctx.author.mention} ahora está Suspend.")
+
+@bot.command(name="ranklock")
+@commands.has_any_role(HIGH_RANK_ROLE_ID, HIGH_COMMAND_ROLE_ID)
+async def ranklock(ctx):
+    await stats_store.set_status(str(ctx.author.id), "Ranklock")
+    await ctx.send(f"✅ {ctx.author.mention} ahora está Ranklock.")
+
+@bot.command(name="blacklist")
+@commands.has_role(HIGH_COMMAND_ROLE_ID)
+async def blacklist(ctx):
+    await stats_store.set_status(str(ctx.author.id), "Blacklist")
+    await ctx.send(f"✅ {ctx.author.mention} ahora está Blacklist.")
 
 @bot.command(name="accept")
 @commands.has_any_role(HIGH_RANK_ROLE_ID, HIGH_COMMAND_ROLE_ID)
@@ -577,7 +636,7 @@ def _is_high_command(author: discord.Member) -> bool:
     return author.guild_permissions.administrator or any(r.id == HIGH_COMMAND_ROLE_ID for r in author.roles)
 
 
-@bot.command(name="kgaxp")
+@bot.command(name="kgaxp", aliases=["gaxp", "addaxp", "kaxp"])
 async def kgaxp(ctx, member: discord.Member, amount: str):
     if not _can_manage_xp(ctx.author):
         await ctx.send("❌ No tienes permiso para dar AXP.")
@@ -595,7 +654,7 @@ async def kgaxp(ctx, member: discord.Member, amount: str):
         await ctx.send("❌ Error interno al agregar AXP. Revisa los logs de Render.")
 
 
-@bot.command(name="kraxp")
+@bot.command(name="kraxp", aliases=["raxp", "removeaxp", "delaxp"])
 async def kraxp(ctx, member: discord.Member, amount: str):
     if not _can_manage_xp(ctx.author):
         await ctx.send("❌ No tienes permiso para quitar AXP.")
@@ -613,7 +672,7 @@ async def kraxp(ctx, member: discord.Member, amount: str):
         await ctx.send("❌ Error interno al remover AXP. Revisa los logs de Render.")
 
 
-@bot.command(name="kgexp")
+@bot.command(name="kgexp", aliases=["gexp", "addexp", "kexp"])
 async def kgexp(ctx, member: discord.Member, amount: str):
     if not _can_manage_xp(ctx.author):
         await ctx.send("❌ No tienes permiso para dar EXP.")
@@ -631,7 +690,7 @@ async def kgexp(ctx, member: discord.Member, amount: str):
         await ctx.send("❌ Error interno al agregar EXP. Revisa los logs de Render.")
 
 
-@bot.command(name="krexp")
+@bot.command(name="krexp", aliases=["rexp", "removeexp", "delexp"])
 async def krexp(ctx, member: discord.Member, amount: str):
     if not _can_manage_xp(ctx.author):
         await ctx.send("❌ No tienes permiso para quitar EXP.")
@@ -649,7 +708,7 @@ async def krexp(ctx, member: discord.Member, amount: str):
         await ctx.send("❌ Error interno al remover EXP. Revisa los logs de Render.")
 
 
-@bot.command(name="kseaxp")
+@bot.command(name="kseaxp", aliases=["setaxp"])
 async def kseaxp(ctx, member: discord.Member, amount: str):
     if not _is_high_command(ctx.author):
         await ctx.send("❌ Solo HC puede usar este comando.")
@@ -666,7 +725,7 @@ async def kseaxp(ctx, member: discord.Member, amount: str):
         await ctx.send("❌ Error interno al fijar AXP. Revisa los logs de Render.")
 
 
-@bot.command(name="ksexp")
+@bot.command(name="ksexp", aliases=["setexp"])
 async def ksexp(ctx, member: discord.Member, amount: str):
     if not _is_high_command(ctx.author):
         await ctx.send("❌ Solo HC puede usar este comando.")
