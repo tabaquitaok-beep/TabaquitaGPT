@@ -504,6 +504,8 @@ async def help_command(ctx):
     await ctx.send(embed=embed)
 
 def get_next_rank(current_rank: int | None) -> int | None:
+    if current_rank in (None, WAIT_ROLE_ID, MIEMBRO_EXTERNO_ROLE_ID):
+        return LOW_RANK_ROLE_ID
     if current_rank == LOW_RANK_ROLE_ID:
         return MIDDLE_RANK_ROLE_ID
     if current_rank == MIDDLE_RANK_ROLE_ID:
@@ -514,13 +516,15 @@ def get_next_rank(current_rank: int | None) -> int | None:
 
 
 def get_requirement_text(next_rank: int | None) -> tuple[str, str, list[str]]:
-    if next_rank == HIGH_RANK_ROLE_ID:
-        return "High Rank", "Selección por un HC", ["AXP", "EXP"]
-    if next_rank == HIGH_COMMAND_ROLE_ID:
-        return "High Command", "Selección de Kenner", ["AXP", "EXP"]
+    if next_rank == LOW_RANK_ROLE_ID:
+        return "Low Rank", "Pasar el Cuestionario", ["🔒 AXP", "🔒 EXP"]
     if next_rank == MIDDLE_RANK_ROLE_ID:
-        return "Middle Rank", "", ["AXP", "EXP"]
-    return "", "", ["AXP", "EXP"]
+        return "Middle Rank", "", ["🔒 AXP", "🔒 EXP"]
+    if next_rank == HIGH_RANK_ROLE_ID:
+        return "High Rank", "Selección por un HC", ["🔒 AXP", "🔒 EXP"]
+    if next_rank == HIGH_COMMAND_ROLE_ID:
+        return "High Command", "Selección de Kenner", ["🔒 AXP", "🔒 EXP"]
+    return "", "", ["🔒 AXP", "🔒 EXP"]
 
 
 def build_progress_bar(current: float, target: float) -> str:
@@ -532,7 +536,7 @@ def build_progress_bar(current: float, target: float) -> str:
 
 def format_progress_line(current: float, target: float, label: str) -> str:
     bar = build_progress_bar(current, target)
-    return f"`{label}` {bar} {int(current)}/{int(target)}"
+    return f"{label} {bar} {current:.1f}/{target:.1f}"
 
 
 @bot.command(name="profile")
@@ -561,8 +565,8 @@ async def profile(ctx, target: discord.Member = None):
             HIGH_COMMAND_ROLE_ID: (100.0, 50.0),
         }
         target_axp, target_exp = reqs.get(next_rank, (0.0, 0.0))
-        req_lines.append(format_progress_line(stats.get("axp", 0.0), target_axp, "AXP"))
-        req_lines.append(format_progress_line(stats.get("exp", 0.0), target_exp, "EXP"))
+        req_lines.append(format_progress_line(stats.get("axp", 0.0), target_axp, "🔒 AXP"))
+        req_lines.append(format_progress_line(stats.get("exp", 0.0), target_exp, "🔒 EXP"))
         if select_text:
             req_lines.append(select_text)
 
@@ -575,8 +579,8 @@ async def profile(ctx, target: discord.Member = None):
     embed.add_field(name="Rango actual", value=role_name, inline=True)
     embed.add_field(name="Siguiente rango", value=next_rank_label or "Ninguno", inline=True)
     embed.add_field(name="Requisitos", value="\n".join(req_lines), inline=False)
-    embed.add_field(name="AXP", value=f"{stats.get('axp', 0.0):.0f}", inline=True)
-    embed.add_field(name="EXP", value=f"{stats.get('exp', 0.0):.0f}", inline=True)
+    embed.add_field(name="AXP", value=f"{stats.get('axp', 0.0):.1f}", inline=True)
+    embed.add_field(name="EXP", value=f"{stats.get('exp', 0.0):.1f}", inline=True)
     embed.add_field(name="Estado", value=status, inline=True)
     embed.add_field(name="Cuenta creada", value=member.created_at.strftime("%d/%m/%Y"), inline=True)
     embed.add_field(name="Ingreso al servidor", value=member.joined_at.strftime("%d/%m/%Y"), inline=True)
@@ -585,8 +589,13 @@ async def profile(ctx, target: discord.Member = None):
 
 @bot.command(name="loa")
 async def loa(ctx):
-    await stats_store.set_status(str(ctx.author.id), "LoA")
-    await ctx.send(f"✅ {ctx.author.mention} ahora está en LoA.")
+    current = normalize_status((await stats_store.get_user_stats(str(ctx.author.id))).get("status", "Activo"))
+    if current == "LoA":
+        await stats_store.set_status(str(ctx.author.id), "Activo")
+        await ctx.send(f"✅ {ctx.author.mention} ya no está en LoA y vuelve a estar Activo.")
+    else:
+        await stats_store.set_status(str(ctx.author.id), "LoA")
+        await ctx.send(f"✅ {ctx.author.mention} ahora está en LoA.")
 
 @bot.command(name="activo", aliases=["operativo"])
 async def activo(ctx):
@@ -595,21 +604,33 @@ async def activo(ctx):
 
 @bot.command(name="suspend")
 @commands.has_any_role(HIGH_RANK_ROLE_ID, HIGH_COMMAND_ROLE_ID)
-async def suspend(ctx):
-    await stats_store.set_status(str(ctx.author.id), "Suspend")
-    await ctx.send(f"✅ {ctx.author.mention} ahora está Suspend.")
+async def suspend(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    if target.id == ctx.author.id:
+        await ctx.send("❌ No puedes suspenderte a ti mismo.")
+        return
+    await stats_store.set_status(str(target.id), "Suspend")
+    await ctx.send(f"✅ {target.mention} ahora está Suspend.")
 
 @bot.command(name="ranklock")
 @commands.has_any_role(HIGH_RANK_ROLE_ID, HIGH_COMMAND_ROLE_ID)
-async def ranklock(ctx):
-    await stats_store.set_status(str(ctx.author.id), "Ranklock")
-    await ctx.send(f"✅ {ctx.author.mention} ahora está Ranklock.")
+async def ranklock(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    if target.id == ctx.author.id:
+        await ctx.send("❌ No puedes poner Ranklock sobre ti mismo.")
+        return
+    await stats_store.set_status(str(target.id), "Ranklock")
+    await ctx.send(f"✅ {target.mention} ahora está Ranklock.")
 
 @bot.command(name="blacklist")
 @commands.has_role(HIGH_COMMAND_ROLE_ID)
-async def blacklist(ctx):
-    await stats_store.set_status(str(ctx.author.id), "Blacklist")
-    await ctx.send(f"✅ {ctx.author.mention} ahora está Blacklist.")
+async def blacklist(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    if target.id == ctx.author.id:
+        await ctx.send("❌ No puedes ponerte Blacklist a ti mismo.")
+        return
+    await stats_store.set_status(str(target.id), "Blacklist")
+    await ctx.send(f"✅ {target.mention} ahora está Blacklist.")
 
 @bot.command(name="accept")
 @commands.has_any_role(HIGH_RANK_ROLE_ID, HIGH_COMMAND_ROLE_ID)
