@@ -492,15 +492,58 @@ async def rank(ctx, target: discord.Member = None):
         f"{member.mention} tiene nivel de rango {level} ({role_name})."
     )
 
-@bot.command(name="ayuda")
+@bot.command(name="ayuda", aliases=["help"])
 async def help_command(ctx):
-    embed = discord.Embed(title="📘 Ayuda básica", color=discord.Color.blue())
-    embed.description = "Comandos disponibles en TabaquitaGPT."
-    embed.add_field(name="!kping", value="Comprueba que el bot está respondiendo.", inline=False)
-    embed.add_field(name="!krank", value="Muestra tu rango y nivel de permisos.", inline=False)
-    embed.add_field(name="!kprofile", value="Muestra información básica del usuario.", inline=False)
-    embed.add_field(name="!kloa", value="Marca tu estado como Leave of Absence.", inline=False)
-    embed.add_field(name="!koperativo", value="Vuelve a dejar tu estado operativo.", inline=False)
+    embed = discord.Embed(
+        title="📘 Centro de ayuda | TabaquitaGPT",
+        description=(
+            "Usa `!k <comando>` o la versión compacta `!k<comando>`. "
+            "Los argumentos entre `< >` son obligatorios."
+        ),
+        color=discord.Color.blue(),
+    )
+    embed.add_field(
+        name="🧭 Básicos",
+        value=(
+            "`!k ping` Comprueba que el bot está en línea.\n"
+            "`!k ayuda` Muestra este menú."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="👤 Perfil y estado",
+        value=(
+            "`!k profile [usuario]` Consulta un perfil y su progreso.\n"
+            "`!k rank [usuario]` Consulta el rango y nivel.\n"
+            "`!k loa` Activa o quita el estado LoA.\n"
+            "`!k activo` Marca tu estado como Activo."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🛡️ Moderación",
+        value=(
+            "`!k suspend <usuario>` Suspende a un usuario. *(HR/HC)*\n"
+            "`!k ranklock <usuario>` Aplica Ranklock. *(HR/HC)*\n"
+            "`!k blacklist <usuario>` Aplica Blacklist. *(HC)*\n"
+            "`!k accept <usuario> [nota]` Acepta a un usuario. *(HR/HC)*\n"
+            "`!k meaccept <usuario>` Acepta como miembro externo. *(HC)*"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📈 Gestión de AXP y EXP",
+        value=(
+            "`!k gaxp <usuario> <cantidad>` Añade AXP. *(HR/HC)*\n"
+            "`!k raxp <usuario> <cantidad>` Quita AXP. *(HR/HC)*\n"
+            "`!k gexp <usuario> <cantidad>` Añade EXP. *(HR/HC)*\n"
+            "`!k rexp <usuario> <cantidad>` Quita EXP. *(HR/HC)*\n"
+            "`!k kseaxp <usuario> <cantidad>` Fija AXP. *(HC)*\n"
+            "`!k ksexp <usuario> <cantidad>` Fija EXP. *(HC)*"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="HR = High Rank · HC = High Command")
     await ctx.send(embed=embed)
 
 def get_next_rank(current_rank: int | None) -> int | None:
@@ -534,9 +577,9 @@ def build_progress_bar(current: float, target: float) -> str:
     return "█" * filled + "▒" * (8 - filled)
 
 
-def format_progress_line(current: float, target: float, label: str) -> str:
+def format_progress_line(current: float, target: float) -> str:
     bar = build_progress_bar(current, target)
-    return f"{label} {bar} {current:.1f}/{target:.1f}"
+    return f"{bar} {current:.1f}/{target:.1f}"
 
 
 async def resolve_member_or_user(ctx, target: str | discord.Member | discord.User | None) -> discord.abc.User | discord.Member | discord.User | None:
@@ -594,8 +637,8 @@ async def profile(ctx, target: str | discord.Member | discord.User | None = None
             HIGH_COMMAND_ROLE_ID: (100.0, 50.0),
         }
         target_axp, target_exp = reqs.get(next_rank, (0.0, 0.0))
-        req_lines.append(format_progress_line(stats.get("axp", 0.0), target_axp, "AXP" if not is_external_profile else "AXP"))
-        req_lines.append(format_progress_line(stats.get("exp", 0.0), target_exp, "EXP" if not is_external_profile else "EXP"))
+        req_lines.append(format_progress_line(stats.get("axp", 0.0), target_axp))
+        req_lines.append(format_progress_line(stats.get("exp", 0.0), target_exp))
         if select_text:
             req_lines.append(select_text)
 
@@ -603,16 +646,13 @@ async def profile(ctx, target: str | discord.Member | discord.User | None = None
     if status not in {"Activo", "LoA", "Suspend", "Ranklock", "Blacklist"}:
         status = "Activo"
 
-    axp_label = "🔒 AXP" if is_external_profile else "AXP"
-    exp_label = "🔒 EXP" if is_external_profile else "EXP"
-
     embed = discord.Embed(title=f"📜 Perfil de {member.display_name}", color=discord.Color.blue())
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="Rango actual", value=role_name, inline=True)
     embed.add_field(name="Siguiente rango", value=next_rank_label or "Ninguno", inline=True)
     embed.add_field(name="Requisitos", value="\n".join(req_lines), inline=False)
-    embed.add_field(name=axp_label, value=f"{stats.get('axp', 0.0):.1f}", inline=True)
-    embed.add_field(name=exp_label, value=f"{stats.get('exp', 0.0):.1f}", inline=True)
+    embed.add_field(name="🔒", value=f"{stats.get('axp', 0.0):.1f}", inline=True)
+    embed.add_field(name="🔒", value=f"{stats.get('exp', 0.0):.1f}", inline=True)
     embed.add_field(name="Estado", value=status, inline=True)
     created_at = getattr(member, "created_at", None)
     joined_at = getattr(member, "joined_at", None)
